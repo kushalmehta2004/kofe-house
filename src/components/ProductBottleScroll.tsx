@@ -9,33 +9,68 @@ interface Props {
   product: Product;
 }
 
+const getAdaptiveFrameCount = () => {
+  const isMobile = window.matchMedia("(max-width: 768px)").matches;
+  if (!isMobile) return 192;
+
+  const memory = (navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? 4;
+  const reducedData = window.matchMedia("(prefers-reduced-data: reduce)").matches;
+
+  if (reducedData || memory <= 2) return 48;
+  if (memory <= 4) return 72;
+  return 96;
+};
+
+const getAdaptiveDpr = () => {
+  const isMobile = window.matchMedia("(max-width: 768px)").matches;
+  const baseDpr = window.devicePixelRatio || 1;
+  if (!isMobile) return Math.min(baseDpr, 2);
+  return Math.min(baseDpr, 1.5);
+};
+
 export default function ProductBottleScroll({ product }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   
   const [images, setImages] = useState<HTMLImageElement[]>([]);
   const [mounted, setMounted] = useState(false);
+  const [totalFrames, setTotalFrames] = useState(192);
+  const canvasMetricsRef = useRef({ width: 0, height: 0, dpr: 1 });
+  const lastFrameIndexRef = useRef(-1);
 
   const { scrollYProgress } = useScroll({
     target: containerRef,
     offset: ["start start", "end end"]
   });
 
-  const totalFrames = 192;
-
   useEffect(() => {
     setMounted(true);
+    const frameCount = getAdaptiveFrameCount();
+    setTotalFrames(frameCount);
+
+    const setupCanvasDimensions = () => {
+      if (!canvasRef.current) return;
+      const canvas = canvasRef.current;
+      const rect = canvas.getBoundingClientRect();
+      const dpr = getAdaptiveDpr();
+
+      canvasMetricsRef.current = { width: rect.width, height: rect.height, dpr };
+      canvas.width = Math.max(1, Math.floor(rect.width * dpr));
+      canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+    };
+
     // Preload images
     const loadedImages: HTMLImageElement[] = [];
     let loadedCount = 0;
 
-    for (let i = 1; i <= totalFrames; i++) {
+    for (let i = 1; i <= frameCount; i++) {
         const img = new Image();
         img.src = `${product.folderPath}/${i}.png`;
         img.onload = () => {
             loadedCount++;
             if (loadedCount === 1) {
               // Draw the first frame immediately when it loads if we are at top
+              setupCanvasDimensions();
               drawFrame(img);
             }
         };
@@ -46,9 +81,12 @@ export default function ProductBottleScroll({ product }: Props) {
     // Initial Resize handling
     const resizeCanvas = () => {
       if (canvasRef.current && loadedImages[0]) {
+        setupCanvasDimensions();
         drawFrame(loadedImages[0]);
       }
     };
+
+    setupCanvasDimensions();
     window.addEventListener("resize", resizeCanvas);
     return () => window.removeEventListener("resize", resizeCanvas);
   }, [product.folderPath]);
@@ -59,23 +97,18 @@ export default function ProductBottleScroll({ product }: Props) {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    // Use device pixel ratio for sharp rendering
-    const dpr = window.devicePixelRatio || 1;
-    const rect = canvas.getBoundingClientRect();
-    
-    // Set actual size in memory (scaled to account for extra pixel density)
-    canvas.width = rect.width * dpr;
-    canvas.height = rect.height * dpr;
+    const { width, height, dpr } = canvasMetricsRef.current;
+    if (!width || !height) return;
 
-    ctx.scale(dpr, dpr);
-    ctx.clearRect(0, 0, rect.width, rect.height);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
 
     // Cover fit logic
-    const hRatio = rect.width / img.width;
-    const vRatio = rect.height / img.height;
+    const hRatio = width / img.width;
+    const vRatio = height / img.height;
     const ratio = Math.max(hRatio, vRatio);
-    const centerShift_x = (rect.width - img.width * ratio) / 2;
-    const centerShift_y = (rect.height - img.height * ratio) / 2;
+    const centerShift_x = (width - img.width * ratio) / 2;
+    const centerShift_y = (height - img.height * ratio) / 2;
 
     ctx.drawImage(
       img,
@@ -92,6 +125,9 @@ export default function ProductBottleScroll({ product }: Props) {
       totalFrames - 1,
       Math.max(0, Math.floor(latest * totalFrames))
     );
+
+    if (frameIndex === lastFrameIndexRef.current) return;
+    lastFrameIndexRef.current = frameIndex;
     
     requestAnimationFrame(() => {
       if (images[frameIndex]) {
